@@ -1,19 +1,13 @@
 # If you are new to Makefiles: https://makefiletutorial.com
 
-PAPER := output/paper.pdf
+DID_BASE_DATA := data/generated/base_sample.rds
 
-PRESENTATION := output/presentation.pdf
+DID_TREATED_DATA := data/generated/treated_sample.rds \
+	data/generated/treated_sample.csv data/generated/treated_sample.xlsx
 
-TARGETS :=  $(PAPER) $(PRESENTATION)
+TARGETS :=  $(DID_BASE_DATA) $(DID_TREATED_DATA)
 
-EXTERNAL_DATA := data/external/fama_french_12_industries.csv \
-	data/external/fama_french_48_industries.csv
-
-WRDS_DATA := data/pulled/cstat_us_sample.rds
-
-GENERATED_DATA := data/generated/acc_sample.rds
-
-RESULTS := output/results.rda
+WRDS_DATA := data/pulled/cstat_global_fund.rds
 
 RSCRIPT := Rscript --encoding=UTF-8
 
@@ -23,9 +17,7 @@ all: $(TARGETS)
 
 clean:
 	rm -f $(TARGETS)
-	rm -f $(RESULTS)
-	rm -f $(GENERATED_DATA)
-	
+
 very-clean: clean
 	rm -f $(WRDS_DATA)
 
@@ -39,17 +31,9 @@ config.csv:
 $(WRDS_DATA): code/R/pull_wrds_data.R code/R/read_config.R config.csv
 	$(RSCRIPT) code/R/pull_wrds_data.R
 
-$(GENERATED_DATA): $(WRDS_DATA) $(EXTERNAL_DATA) code/R/prepare_data.R
-	$(RSCRIPT) code/R/prepare_data.R
+$(DID_BASE_DATA): $(WRDS_DATA) code/R/create_base_sample.R
+	$(RSCRIPT) code/R/create_base_sample.R
 
-$(RESULTS):	$(GENERATED_DATA) code/R/do_analysis.R
-	$(RSCRIPT) code/R/do_analysis.R
-
-$(PAPER): doc/paper.Rmd doc/references.bib $(RESULTS) 
-	$(RSCRIPT) -e 'library(rmarkdown); render("doc/paper.Rmd")'
-	mv doc/paper.pdf output
-	rm -f doc/paper.ttt doc/paper.fff
+$(DID_TREATED_DATA)&:	$(DID_BASE_DATA) code/R/inject_tment.R code/R/create_treated_sample.R
+	$(RSCRIPT) code/R/create_treated_sample.R
 	
-$(PRESENTATION): doc/presentation.Rmd $(RESULTS) doc/beamer_theme_trr266.sty
-	$(RSCRIPT) -e 'library(rmarkdown); render("doc/presentation.Rmd")'
-	mv doc/presentation.pdf output

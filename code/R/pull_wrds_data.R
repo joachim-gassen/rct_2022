@@ -1,11 +1,13 @@
 # --- Header -------------------------------------------------------------------
-# See LICENSE file for details 
+# See LICENSE file for details
 #
-# This code pulls data from WRDS 
+# This code pulls data from WRDS
 # ------------------------------------------------------------------------------
 
-library(RPostgres)
-library(DBI)
+suppressMessages({
+  library(RPostgres)
+  library(DBI)
+})
 
 if (!exists("cfg")) source("code/R/read_config.R")
 
@@ -36,53 +38,45 @@ wrds <- dbConnect(
 
 message("Logged on to WRDS ...")
 
-# --- Specify filters and variables --------------------------------------------
+stat_vars <- c(
+  "gvkey", "prirow", "loc", "fic", "sic", "spcindcd", "ipodate", "dldte"
+)
+stat_var_str <- paste(stat_vars, collapse = ", ")
 
 dyn_vars <- c(
-  "gvkey", "conm", "cik", "fyear", "datadate", "indfmt", "sich",
-  "consol", "popsrc", "datafmt", "curcd", "curuscn", "fyr", 
-  "act", "ap", "aqc", "aqs", "acqsc", "at", "ceq", "che", "cogs", 
-  "csho", "dlc", "dp", "dpc", "dt", "dvpd", "exchg", "gdwl", "ib", 
-  "ibc", "intan", "invt", "lct", "lt", "ni", "capx", "oancf", 
-  "ivncf", "fincf", "oiadp", "pi", "ppent", "ppegt", "rectr", 
-  "sale", "seq", "txt", "xint", "xsga", "costat", "mkvalt", "prcc_f",
-  "recch", "invch", "apalch", "txach", "aoloch",
-  "gdwlip", "spi", "wdp", "rcp"
+  "gvkey",  "conm", "fyear", "datadate", "iid", "indfmt", "sich",
+  "consol", "popsrc", "datafmt", "curcd", "exchg", "fyr",
+  "act", "ap", "aqc", "at", "ceq", "che", "cogs",
+  "dlc", "dp", "dpc",  "ib", "ibc", "lct", "nicon", "oancf",
+  "ivncf", "fincf", "oiadp", "pi", "sale"
 )
 
 dyn_var_str <- paste(dyn_vars, collapse = ", ")
+dyn_filter <- paste(
+  "consol='C' and (indfmt='INDL') and datafmt='HIST_STD'",
+  "and popsrc='I'"
+)
 
-stat_vars <- c("gvkey", "loc", "sic", "spcindcd", "ipodate", "fic")
-stat_var_str <- paste(stat_vars, collapse = ", ")
+# --- Pull Global data --------------------------------------------------
 
-cs_filter <- "consol='C' and (indfmt='INDL' or indfmt='FS') and datafmt='STD' and popsrc='D'"
-
-
-# --- Pull Compustat data ------------------------------------------------------
-
-message("Pulling dynamic Compustat data ... ", appendLF = FALSE)
-res <- dbSendQuery(wrds, paste(
-  "select", 
-  dyn_var_str, 
-  "from COMP.FUNDA",
-  "where", cs_filter
-))
-
-wrds_us_dynamic <- dbFetch(res, n=-1)
+message("Pulling global static data ... ", appendLF = FALSE)
+res <- dbSendQuery(wrds, paste("select ", stat_var_str, "from COMP.G_COMPANY"))
+cstat_global_static <- dbFetch(res,n=-1)
 dbClearResult(res)
 message("done!")
 
-message("Pulling static Compustat data ... ", appendLF = FALSE)
-res2<-dbSendQuery(wrds, paste(
-  "select ", stat_var_str, "from COMP.COMPANY"
+message("Pulling global annual financial data ... ", appendLF = FALSE)
+res <- dbSendQuery(wrds, paste(
+  "select", dyn_var_str, "from COMP.G_FUNDA", "where", dyn_filter
 ))
-
-wrds_us_static <- dbFetch(res2,n=-1)
-dbClearResult(res2)
+cstat_global_dynamic <- dbFetch(res, n=-1)
+dbClearResult(res)
 message("done!")
-
-wrds_us <- merge(wrds_us_static, wrds_us_dynamic, by="gvkey")
-save_wrds_data(wrds_us, "data/pulled/cstat_us_sample.rds")
 
 dbDisconnect(wrds)
 message("Disconnected from WRDS")
+
+# --- Store data ------------------------------------------------------
+
+cstat_fund <- merge(cstat_global_static, cstat_global_dynamic, by="gvkey")
+save_wrds_data(cstat_fund, "data/pulled/cstat_global_fund.rds")
