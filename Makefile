@@ -5,7 +5,11 @@ DID_BASE_DATA := data/generated/base_sample.rds
 DID_TREATED_DATA := data/generated/treated_sample.rds \
 	data/generated/treated_sample.csv data/generated/treated_sample.xlsx
 
-TARGETS :=  $(DID_BASE_DATA) $(DID_TREATED_DATA)
+SIM_DATA := data/permanent/did_teffect_sims.rds
+
+DOCS := output/ass_solution.html
+
+TARGETS :=  $(DID_BASE_DATA) $(DID_TREATED_DATA) $(SIM_DATA) $(DOCS)
 
 WRDS_DATA := data/pulled/cstat_global_fund.rds
 
@@ -36,4 +40,11 @@ $(DID_BASE_DATA): $(WRDS_DATA) code/R/create_base_sample.R
 
 $(DID_TREATED_DATA)&:	$(DID_BASE_DATA) code/R/inject_tment.R code/R/create_treated_sample.R
 	$(RSCRIPT) code/R/create_treated_sample.R
+	
+$(SIM_DATA): $(DID_BASE_DATA) code/R/inject_tment.R code/R/sim_did_tment_effects.R
+	$(RSCRIPT) code/R/inject_tment.R code/R/sim_did_tment_effects.R
+	
+output/ass_solution.html: $(SIM_DATA) $(DID_TREATED_DATA) doc/ass_solution.Rmd
+	$(RSCRIPT) -e 'library(rmarkdown); render("doc/ass_solution.Rmd")'
+	mv doc/ass_solution.html output
 	

@@ -1,0 +1,412 @@
+---
+title: "How to (Properly) Estimate A DiD Treatment Effect"
+author: "Joachim Gassen"
+date: '2022-05-16'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, watning = FALSE, message = FALSE)
+
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(fixest)
+library(ExPanDaR)
+library(modelsummary)
+```
+
+### Explore data
+
+Every data analysis should start with a thorough exploratory data analysis to make sure that you understand the data and that it is represents what it is supposed to represent.
+
+The nature of the analysis will vary with its nature but normally it will contain at least the following steps:
+
+1. Assess the structure of the data: 
+    - How many observations do you have
+    - What defines an observation (time, cross-section)?
+    - How are the observations distributed across these dimensions?
+    - Which variables are included?
+    
+2. Assess the nature of the variables:
+    - What is the type of the variable (discrete, continuous, categorical)?
+    - Does it contain missing values?
+    - How is the data distributed?
+    - Are extreme values present?
+    
+3. How are the variables associated?
+    - How do variables vary across the data dimensions?
+    - Do variables co-vary?
+
+When evaluating the points above, it is a good idea to form expectations about what you are likely to observe first and then see whether your expectations are verified by the data.
+
+If your expectations are not met you should next try to understand why.
+
+Time for a shameless self-plug: I developed a R-based package for interactive exploratory data analysis. You can start it up from within R like this:
+
+```{r, eval = FALSE}
+# install.packages("ExPanDaR")
+library(ExPanDaR)
+smp <- readRDS("data/generated/treated_sample.rds") 
+ExPanD(smp, cs_id = c("gvkey", "conm"), ts_id = "fyear")
+```
+
+Alternatively you can also use it online: https://jgassen.shinyapps.io/expand
+
+But here we also do it "by hand" so let's turn to our data. Based on what I told you, it should be organized by firm and fiscal year and contain data for twelve countries and the fiscal years 2001 to 2020.
+
+Let us first see how many observations we have and verify whether each observation can be identified by the firm identifier `gvkey` and the fiscal year
+
+```{r}
+smp <- readRDS("../data/generated/treated_sample.rds") 
+
+nrow(smp)
+
+# The following keeps all observations which share the same
+# gvkey and fyear sample. There should be no such observations # in the data 
+
+dup_obs <- smp %>%
+  group_by(gvkey, fyear) %>%
+  filter(n() > 1)
+
+nrow(dup_obs)
+```
+
+Nice. We have `r format(nrow(smp), big.mark = ",")` observations and no duplicates, indicating that our observations are indeed identified by firm and fiscal year.
+
+Now: Ho are our observations are distributed across countries and over time?
+
+```{r}
+table(smp$fyear, smp$loc) %>%
+  kable() %>% kable_styling()
+```
+
+Not surprinsingly, you see that the 12 countries included in the sample vary by their number of firms. Additionally, not all firms have data for all years. In econometrics jargon, we refer to such a sample as "unbalanced". Let's see who many different firms in total we have for each country.
+
+```{r}
+smp %>%
+  group_by(country, gvkey) %>%
+  filter(row_number() == 1) %>%
+  group_by(country) %>%
+  summarise(`# firms` = n(), .groups = "drop") %>%
+  kable() %>% kable_styling(full_width = FALSE)
+```
+
+Now let us take a quick look at the treatment indicators to make sure that we understand what they mean. Quoting from the variable definitions of the assignment, this is how our data variables should be defined
+
+- `loc`: An ISO 3-letter code indicating the country where the respective firm is headquartered
+- `country`: The country name to the ISO code
+- `tment_ctry`: Indicator whether the respective country was 'treated' with a regulatory reform
+- `tment`: Indicator whether a certain firm-year was subject to the new regulatory regime
+- `time_to_treat`: For firm-years in countries that are subject to the regulatory reform: The time distance in years to the year where the reform went into effect. Zero for all firm-years that belong to countries that are not subject to the reform.
+- `gvkey`: The global company key, a unique six-digit number key assigned to each company in the Standard & Poor's data universe
+- `fyear`: The fiscal year of the firm-year observation
+- `conm`: A company name
+- `ear`: Accounting profitability, defined as income before extraordinary items, divided by average total assets, including our injected treatment effect
+- `avg_ta`: Average total assets, meaning the total assets of the beginning of the fiscal year plus the total assets at the end of the fiscal year, divided by two.
+
+So: Which countries are treated in our sample and when are they treated?
+
+```{r}
+
+# Verify that countries with tment_ctry == FALSE are never treated
+
+smp %>%
+  filter(!tment_ctry & tment) %>%
+  nrow()
+
+smp %>%
+  filter(tment_ctry) %>%
+  group_by(country, fyear, tment) %>%
+  summarise(nobs = n(), .groups = "drop") %>%
+  pivot_wider(
+    id_cols = "fyear", 
+    names_from = c("country", "tment"),
+    values_from = nobs
+  ) %>%
+  replace(is.na(.), 0) %>%
+  kable() %>% kable_styling(full_width = FALSE)
+```
+
+OK. This looks like a clean treatment administration. For all treated countries, treatment commences in 2011 and continues until the sample ends. 
+
+The next step is the assessment of our dependent variable. In most real life research settings this would also include some covariates, but here it is only one variable. We will check its distribution both visually and by looking at some descriptive statistics.
+
+```{r}
+rl <- prepare_descriptive_table(smp %>% select(ear))
+
+rl$kable_ret %>%
+  kable_styling()
+
+ggplot(smp) + geom_histogram(aes(x = ear)) + theme_minimal()
+```
+
+As you can see, our profitability measure is affected by extreme values. While the interquartile range of the data is distributed in meaningful boundaries (`r round(100*quantile(smp$ear, 0.25))`% to `r round(100*quantile(smp$ear, 0.75))`%) the minimum is `r format(round(100*min(smp$ear)), big.mark = ",")`% and the maximum is `r format(round(100*max(smp$ear)), big.mark = ",")`%. 
+
+While we look at this in a little bit more detail in the second part of this class, for now we do something that is commonly done in the accounting and finance literature: We "winsorize" our dependent varibale, meaning that we set all values that a larger (smaller) than the 99th (1st) percentile to these percentiles. This drastically reduces the effects of outliers ans makes the distribution more accessible.
+
+```{r}
+
+smp$ear <- treat_outliers(smp$ear)
+rl <- prepare_descriptive_table(smp %>% select(ear))
+
+rl$kable_ret %>%
+  kable_styling()
+
+ggplot(smp) + geom_histogram(aes(x = ear)) + theme_minimal()
+```
+
+This looks more reasonable and will reduce the likelihood that our estimates of the next step are unduly influenced by extreme values.
+
+As a last step of our exploratory data analysis, we will check the variation of profitability across time and countries. 
+
+```{r}
+ggplot(smp, aes(x = fyear, group = fyear, y = ear)) +
+  geom_boxplot(outlier.shape = NA) + 
+  coord_cartesian(ylim = c(-0.25, 0.25)) +
+  theme_minimal()
+
+ggplot(smp, aes(x = country, group = country, y = ear)) +
+  geom_boxplot(outlier.shape = NA) + 
+  coord_cartesian(ylim = c(-0.25, 0.25)) +
+  theme_minimal()
+```
+
+You see the effect of the financial crises and (maybe) the effect of the start of the pandemic crisis reflected over time and also over countries. Overall, however, there do not appear dramatic trends in the data. Time to generate the Difference-in-differences estimate.
+
+
+### Estimating a 'classic' difference-in-differences estimate
+
+To estimate a difference-in-differences (DiD) estimate in the most simplisitic way, we need to estimate the following model
+
+$ear_{i,t} = \alpha + \beta tmentctry_i + \gamma post_t + \delta tmentctry_i \cdot post_t + \epsilon_{i,t}$
+
+```{r}
+smp$post <- smp$fyear >= 2011
+
+mod_classic <- feols(ear ~ tment_ctry*post, data = smp)
+modelsummary(mod_classic, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01))
+```
+
+Now we can calculate our first 95 % confidence interval for the treatment effect based on this estimate:
+
+```{r}
+ci_classic <- confint(mod_classic)
+ci_classic
+```
+
+
+### Twoway fixed effect DiD
+
+As we have multiple observations per time and treatment group, one would normally estimate such a model with time and cross-sectional fixed effects to remove unobservable time-invariant cross-sectional as well as cross-sectionally stable time-variant variation. The corresponding model drops the $post$ and $tmentctry$ indicators as these are subsumed by the time fixed effect $\rho_t$ and the firm fixed effect $\psi_i$.
+
+$ear_{i,t} = \beta tment_{i,t} + \psi_i + \rho_t  + \epsilon_{i,t}$
+
+```{r}
+mod_twfe <- feols(ear ~ tment | gvkey + fyear, data = smp)
+modelsummary(mod_twfe, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01))
+
+ci_twfe_cl_firm <- confint(mod_twfe)
+ci_twfe_cl_firm
+```
+
+You see that the estimate is larger than the first one. However, when estimating two-way fixed effect models, it is wise to cluster the standard error at the treatment administration level, meaning at the level on which the treatment is decided. For our sample, this would mean that we should cluster our standard errors at the country level, not at the firm level as done above. In addition, we also cluster it at the year-level to address cross-sectional-invariant noise.
+
+```{r}
+modelsummary(
+  mod_twfe,  cluster = c("country", "fyear"), 
+  stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01)
+)
+
+ci_twfe_cl_cy <- confint(mod_twfe, cluster = c("country", "fyear"))
+ci_twfe_cl_cy
+```
+
+As you can see, clustering at the country and year levels makes the confidence interval much wider. Now we have three confidence intervals. Which ones should we trust? We will this question in the second part of the class. Before we do so, we will visualize our treatment effect estimation so that we can assess the parallel trend assumptions.
+
+
+### Assessing the parallel trends assumption
+
+To assess the parallel trend assumption one often estimates am event-study DiD. This means that for each year pre and post a given base year, yearly treamtent effects for the treatment countries are estimated. Using the year 2010 as a base year, this yields the following graph:
+
+```{r}
+event_mod <- fixest::feols(
+  ear ~ i(time_to_treat, tment_ctry, ref = -1) | gvkey + fyear, data = smp,
+  cluster = c("country", "fyear")
+)
+
+iplot(event_mod, xlab = 'Time to treatment', main = 'Event Study TWFE')
+```
+
+If prior treatment the dots provide a more less flat line this is indicative parallel trend. As you can see from the upward sloping trend prior 2011, the profitability of our treament country firms improved over time relative to the non-treatment countries. This casts some doubt about the parallel trend assumption.
+
+To see how the proftiabilty of both country groups changes over time, we can include the yearly confidence intervals from the graph above with mean values for both groups.
+
+```{r}
+tment_cis <- confint(event_mod)
+colnames(tment_cis) <- c("lb", "ub")
+m1_obs <- which(rownames(tment_cis) == "time_to_treat::-2:tment_ctry")
+rownames(tment_cis) <- NULL
+
+tment_cis <- bind_cols(
+  tibble(fyear = unique(smp$fyear)),
+  bind_rows(
+    tment_cis[1:m1_obs,], 
+    tibble(lb = 0, ub = 0), 
+    tment_cis[(m1_obs + 1):nrow(tment_cis),]
+  )
+) %>% mutate(
+  delta = ub - (ub + lb)/2
+)
+
+ttrend <- smp %>%
+  group_by(fyear, tment_ctry) %>%
+  summarise(mn_ear = mean(ear), .groups = "drop") %>%
+  left_join(tment_cis, by = "fyear") %>%
+  mutate(
+    lb = ifelse(tment_ctry, mn_ear - delta, NA),
+    ub = ifelse(tment_ctry, mn_ear + delta, NA)
+  )
+
+
+ggplot(ttrend, aes(x = fyear, y = mn_ear, color = tment_ctry)) +
+  geom_pointrange(
+    aes(ymin = lb, ymax = ub), 
+    position = position_dodge(width=0.5)
+  ) + 
+  theme_minimal() + 
+  labs(x = "", y = "Profitability", color = "Treated Country") + 
+  theme(legend.position = "bottom")
+
+```
+
+You can see from the plot that for the years 2008 - 2010, the parallel trend assumption seems doubtful. There seems to be a positive trend present for the treatment countries prior treatment. We will have to keep this in mind when interpreting our coefficients.
+
+
+### What is the "correct" way to estimate this model?
+
+Let's compare our coefficients. We have two different coefficients submitted by three students (thank you!). I have calculated three confidence intervals above. How do they compare?
+
+
+```{r}
+cis_students <- tibble(
+  est = c(0.018521, 0.018521, 0.049742),
+  lb = c(0.011794497, 0.011794497, 0.03420092),
+  ub = c(0.02524792, 0.02524792, 0.06528263)
+)
+
+cis_jg <- tibble(
+  est = c(
+    mod_classic$coefficients[4],
+    rep(mod_twfe$coefficients[1], 2)
+  ),
+  lb = c(
+    ci_classic[4, 1], ci_twfe_cl_firm[1, 1], 
+    ci_twfe_cl_cy[1, 1]
+  ),
+  ub = c(
+    ci_classic[4, 2], ci_twfe_cl_firm[1, 2], 
+    ci_twfe_cl_cy[1, 2]
+  )
+)
+
+cis <- bind_rows(cis_students, cis_jg) %>%
+  mutate(
+    no = factor(1:6),
+    source = c(rep("Students", 3), rep("Joachim", 3))
+  )
+
+ci_plot <- ggplot(cis, aes(x = no, color = source)) +
+  geom_pointrange(
+    aes(y = est, ymin = lb, ymax = ub)
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ci_plot
+```
+
+Now... Here is the true effect:
+
+```{r}
+ci_plot + geom_hline(yintercept = 0.03, color = "red", lty = 2)
+```
+
+You see that all but two estimates failed to include the injected treatment effect. Is this just bad luck? To see this a little bit more clearly, I prepped a simulation that repeats this exercise for all 924 possible combinations of six treatment countries. This allows us to compare our coefficients across many identical data generating processes:
+
+- Use data from base sample
+- Randomly select six countries to receive treatments in 2011
+- Apply 0.03 treatment effect to profitability
+- Estimate various DiD models on data, store their 95 % confidence interval
+
+Now we can assess the precision and bias of our potential approaches. First, let's compare the classic OLS approach for DiD with the two-way fixed effect model. Remember, on our data, the estimate provided by plain OLS was closer to the truth. Can we generalize this?
+
+```{r}
+sim_runs <- readRDS("../data/permanent/did_teffect_sims.rds")
+classic_vs_twfe <- sim_runs %>% 
+  filter(cluster == "country", winsorize == 0.01, teffect == 0.03) 
+
+ggplot(classic_vs_twfe) + 
+  geom_histogram(aes(x = est, fill = model, group = model)) +
+  theme_minimal()
+```
+
+You see that (a) our estimators are clustered around certain values, most likely because influential countries violating the parallel trend assumptions in different directions. (b), and this is what we wanted to assess, the TWFE estimates have a significantly narrower distribution meaning that they are generally closer to the truth. This is consistent with the fixed effects purging out some variance that otherwise makes the plain OLS estimation more noisy.
+
+We can use the same approach to test whether the winsorization has an effect on the precision of the estimators.
+
+```{r}
+winsorize_or_not <- sim_runs %>% 
+  filter(cluster == "country", model == "twfe", teffect == 0.03) %>%
+  mutate(winsorize = as.factor(winsorize))
+
+ggplot(winsorize_or_not) + 
+  geom_histogram(aes(x = est, fill = winsorize, group = winsorize)) +
+  theme_minimal()
+```
+
+Again, winsorized results yield more consistent estimates. So, using a two-way fixed effect model on data cleaned for outliers is generally more likely to provide precise treatment effect estimates. 
+
+How about the clustering of standard errors? As you might recall from your econometrics class, clustering does not affect the estimates of the regression but influences how their standard errors are calculated. If the standard errors are calculated correctly, then the resulting confidence intervals should include the true estimate in 95% of the cases, leading to a type 1 error of 5%. Phrased differently, a test that the coefficient is significantly different from 0.03 should only reject the Null in only 5% of the cases.
+
+How often do our models yield a confidence interval that does not include the true effect? See the following table:
+
+```{r}
+power_res <- sim_runs %>%
+  group_by(model, teffect, cluster, winsorize) %>%
+  summarise(
+    mn_est = mean(est),
+    sd_est = sd(est),
+    power = sum(lb > 0)/n(),
+    type1error = sum(teffect < lb | teffect > ub)/n()
+  )
+
+power_res %>%
+  filter(model == "twfe", teffect == 0.03) %>%
+  kable() %>% kable_styling(full_width = FALSE)
+```
+
+
+### A final look on power
+
+Based on the above we conclude that two-way fixed effect estimation on winsorized data with two-way clustering provides the most consistent estimates. But how much power for identifying a significant effect does this approach have in our setting? We plot a "power curve" to answer this last question.
+
+```{r}
+
+df <- power_res %>%
+  filter(model == "twfe", winsorize == 0.01, cluster == "country_fyear") 
+
+ggplot(df, aes(x = teffect, y = power)) +
+  geom_hline(yintercept = 0.8, color = "red", lty = 2) + 
+  geom_line() + geom_point() + theme_minimal()
+```
+
+You see that it takes an effect of about 3.5 percentage points to reach a power of about 80%. Given that such a level of power is a typical level that is considered to be satisfactory for informative empirical studies it seems important to note that real life DiD designs with a limited number of treated groups/countries are relatively low-powered more or less regardless of how many units are in the treated groups. 
+
+This concludes my somewhat extended solution to your DiD assignment. Feel free to reach out with any questions and remarks that you might have. And if you encountered a typo (like I said, there will be plenty) feel [free to submit a pull request on GitHub](https://opensource.com/article/19/7/create-pull-request-github) to fix them. 
+
+Enjoy, everybody!
+
+

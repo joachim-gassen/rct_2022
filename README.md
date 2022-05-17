@@ -33,6 +33,11 @@ If you need a starting point for your analysis, take a look at [the chapter on D
 When done, please upload your estimate and its confidence interval on Moodle. If you have been working as a team on the assignment, each member should submit their results separately. The deadline for the assignment is Friday, May 13. As you know, completing the assignment is voluntary but --- pretty please --- do it regardless. It will help you to understand the empirical analyses that we will discuss throughout the course. 
 
 
+### Task Solution
+
+We discussed the solution in class. You can find the file on Moodle or [here in the `output` folder](https://raw.githubusercontent.com/joachim-gassen/rct_2022/main/output/ass_solution.html). The code that I used to create the solution resides in the `doc` folder.
+
+
 ### Some remarks on how to use the materials in this repo
 
 If you are new to scientific computing, we suggest that you also pick up a reference from the list below and browse through it. The [Gentzkow and Shapiro (2014) paper](https://web.stanford.edu/~gentzkow/research/CodeAndData.pdf) is a particularly easy and also useful read. 
@@ -43,7 +48,9 @@ Then browse around the repository and familiarize yourself with its folders. You
 
 - `data`: A directory where data is stored. You will see that it again contains sub-directories and a README file that explains their purpose. You will also see that in the `external` sub-directory there are some data files. Again, the README file explains their content.
 
-You also see an `output` directory but it is empty. Why? Because you will create the output locally on your computer, if you want.
+- `doc`: This is where I store files that generate solutions or other documents that we need in class.
+
+- `output`: All code-generated solutions and other class documents go there. 
 
 
 ### Getting WRDS access
